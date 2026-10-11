@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.DS_Store
+.env
+.env.*
+!.env.example
+
+__pycache__/
+*.py[cod]
+.aws-sam/
+.env
+.env.*
+!.env.example
+__pycache__/
+.pytest_cache/

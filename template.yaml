@@ -1,0 +1,341 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: SaansSetu School Air Action API
+
+Globals:
+  Function:
+    Runtime: python3.9
+    Timeout: 30
+    MemorySize: 256
+    Environment:
+      Variables:
+        DATA_GOV_IN_RESOURCE_ID: "3b01bcb8-0b14-4abf-b6f2-c1bfd384ba69"
+        STATIONS_TABLE: !Ref StationsTable
+        SCHOOLS_TABLE: !Ref SchoolsTable
+        MEMBERSHIPS_TABLE: !Ref MembershipsTable
+        ACTION_LOGS_TABLE: !Ref ActionLogsTable
+        SNAPSHOT_BUCKET: !Ref SnapshotBucket
+        COGNITO_USER_POOL_ID: !Ref CognitoUserPool
+        DATA_GOV_IN_SECRET_ARN: !Ref DataGovInApiKey
+
+Resources:
+  # Cognito User Pool
+  CognitoUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: saanssetu-users
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireLowercase: true
+          RequireUppercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+      AutoVerifiedAttributes:
+        - email
+      UsernameAttributes:
+        - email
+      Schema:
+        - Name: role
+          AttributeDataType: String
+          Mutable: true
+          Required: false
+        - Name: school_id
+          AttributeDataType: String
+          Mutable: true
+          Required: false
+        - Name: school_name
+          AttributeDataType: String
+          Mutable: true
+          Required: false
+        - Name: district
+          AttributeDataType: String
+          Mutable: true
+          Required: false
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: false
+
+  CognitoUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref CognitoUserPool
+      ClientName: saanssetu-web
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      PreventUserExistenceErrors: ENABLED
+
+  CognitoUserPoolGroups:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: Educator
+      UserPoolId: !Ref CognitoUserPool
+      Description: School educators and staff
+      Precedence: 1
+
+  CognitoSchoolAdminGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: SchoolAdmin
+      UserPoolId: !Ref CognitoUserPool
+      Description: Verified school administrators
+      Precedence: 2
+
+  CognitoDistrictOfficerGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: DistrictOfficer
+      UserPoolId: !Ref CognitoUserPool
+      Description: Verified district officers
+      Precedence: 3
+
+  # API Gateway with Cognito Authorizer
+  ApiGateway:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: saanssetu-api
+      StageName: prod
+      Auth:
+        DefaultAuthorizer: CognitoAuthorizer
+        Authorizers:
+          CognitoAuthorizer:
+            UserPoolArn: !GetAtt CognitoUserPool.Arn
+      Cors:
+        AllowMethods: "'GET,POST,OPTIONS'"
+        AllowHeaders: "'Content-Type,Authorization'"
+        AllowOrigin: "'*'"
+        MaxAge: "'86400'"
+
+  # DynamoDB Tables
+  StationsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: saanssetu-stations
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: station_id
+          AttributeType: S
+        - AttributeName: city
+          AttributeType: S
+      KeySchema:
+        - AttributeName: station_id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: by-city
+          KeySchema:
+            - AttributeName: city
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+
+  SchoolsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: saanssetu-schools
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: school_id
+          AttributeType: S
+        - AttributeName: city
+          AttributeType: S
+      KeySchema:
+        - AttributeName: school_id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: by-city
+          KeySchema:
+            - AttributeName: city
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+
+  MembershipsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: saanssetu-memberships
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: user_id
+          AttributeType: S
+        - AttributeName: school_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: user_id
+          KeyType: HASH
+        - AttributeName: school_id
+          KeyType: RANGE
+
+  ActionLogsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: saanssetu-action-logs
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: school_id
+          AttributeType: S
+        - AttributeName: date
+          AttributeType: S
+      KeySchema:
+        - AttributeName: school_id
+          KeyType: HASH
+        - AttributeName: date
+          KeyType: RANGE
+
+  # S3 Bucket for latest snapshot
+  SnapshotBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub saanssetu-snapshots-${AWS::AccountId}-${AWS::Region}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireOldVersions
+            Status: Enabled
+            NoncurrentVersionExpirationInDays: 7
+
+  # Secrets Manager for data.gov.in API key
+  DataGovInApiKey:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: saanssetu/data-gov-in-api-key
+      Description: data.gov.in API key for CPCB AQI feed
+      GenerateSecretString:
+        SecretStringTemplate: '{"api_key": ""}'
+        GenerateStringKey: "api_key"
+        PasswordLength: 64
+        ExcludeCharacters: '"@/\'
+      Tags:
+        - Key: Project
+          Value: SaansSetu
+
+  # Lambda: API Handler
+  ApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: saanssetu-api
+      CodeUri: backend/aqi/
+      Handler: app.handler
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref StationsTable
+        - DynamoDBWritePolicy:
+            TableName: !Ref StationsTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref SchoolsTable
+        - DynamoDBWritePolicy:
+            TableName: !Ref SchoolsTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref MembershipsTable
+        - DynamoDBWritePolicy:
+            TableName: !Ref MembershipsTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref ActionLogsTable
+        - DynamoDBWritePolicy:
+            TableName: !Ref ActionLogsTable
+        - S3ReadPolicy:
+            BucketName: !Ref SnapshotBucket
+        - S3WritePolicy:
+            BucketName: !Ref SnapshotBucket
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref DataGovInApiKey
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /api/aqi/{proxy+}
+            Method: ANY
+
+  # Lambda: Ingestion Handler
+  IngestionFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: saanssetu-ingestion-v2
+      CodeUri: backend/aqi/
+      Handler: ingestion_handler.handler
+      Timeout: 300
+      MemorySize: 512
+      Environment:
+        Variables:
+          CODE_VERSION: "2"
+      Policies:
+        - DynamoDBWritePolicy:
+            TableName: !Ref StationsTable
+        - S3WritePolicy:
+            BucketName: !Ref SnapshotBucket
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref DataGovInApiKey
+
+  # EventBridge Schedule for hourly ingestion
+  IngestionSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: saanssetu-hourly-ingestion
+      Description: Hourly AQI ingestion from data.gov.in
+      ScheduleExpression: "rate(1 hour)"
+      FlexibleTimeWindow:
+        Mode: FLEXIBLE
+        MaximumWindowInMinutes: 15
+      Target:
+        Arn: !GetAtt IngestionFunction.Arn
+        RoleArn: !GetAtt IngestionScheduleRole.Arn
+        Input: '{}'
+
+  IngestionScheduleRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: scheduler.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: InvokeIngestionLambda
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt IngestionFunction.Arn
+
+  # Lambda permission for EventBridge to invoke
+  IngestionFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref IngestionFunction
+      Action: lambda:InvokeFunction
+      Principal: scheduler.amazonaws.com
+      SourceArn: !GetAtt IngestionSchedule.Arn
+
+Outputs:
+  ApiUrl:
+    Description: API Gateway URL
+    Value: !Sub https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/
+  CognitoUserPoolId:
+    Description: Cognito User Pool ID
+    Value: !Ref CognitoUserPool
+  CognitoClientId:
+    Description: Cognito User Pool Client ID
+    Value: !Ref CognitoUserPoolClient
+  SnapshotBucketName:
+    Description: S3 Bucket for station snapshots
+    Value: !Ref SnapshotBucket
+  DataGovInSecretArn:
+    Description: Secrets Manager ARN for data.gov.in API key
+    Value: !Ref DataGovInApiKey
