@@ -59,7 +59,7 @@ export async function signUp({ email, password, name, schoolName, requestedRole 
     return { confirmationRequired: false, session: saveSession(session), demo: true };
   }
   const response = await cognito("SignUp", { ClientId: CLIENT_ID, Username: email, Password: password, UserAttributes: [
-    { Name: "email", Value: email }, { Name: "name", Value: name }, { Name: "custom:school_name", Value: schoolName }, { Name: "custom:requested_role", Value: requestedRole },
+    { Name: "email", Value: email }, { Name: "name", Value: name }, { Name: "custom:school_name", Value: schoolName },
   ] });
   return { confirmationRequired: !response.UserConfirmed, email };
 }

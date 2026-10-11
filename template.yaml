@@ -52,6 +52,11 @@ Resources:
           AttributeDataType: String
           Mutable: true
           Required: false
+        - Name: requested_role
+          AttributeDataType: String
+          Mutable: true
+          Required: false
+          DeveloperOnlyAttribute: true
       AdminCreateUserConfig:
         AllowAdminCreateUserOnly: false
 
